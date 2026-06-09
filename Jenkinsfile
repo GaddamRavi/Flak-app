@@ -4,7 +4,7 @@ pipeline {
 
     environment {
         IMAGE_NAME = "ravi0619/flask-app"
-        IMAGE_TAG = "1"
+        IMAGE_TAG = "v2"
     }
 
     stages {
@@ -17,7 +17,7 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh 'docker build -t $flask-app:$v2 .'
+                sh 'docker build -t $IMAGE_NAME:$ IMAGE_TAG .'
             }
         }
 
