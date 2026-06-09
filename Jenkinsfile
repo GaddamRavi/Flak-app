@@ -53,7 +53,7 @@ pipeline {
                 sh '''
                 sed -i "s|latest|$IMAGE_TAG|g" deployment.yaml
 
-                kubectl apply -f deployments.yaml
+                kubectl apply -f deployment.yaml
                 kubectl apply -f service.yaml
                 '''
             }
