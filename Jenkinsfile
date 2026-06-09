@@ -53,7 +53,7 @@ pipeline {
                 sh '''
                 sed -i "s|latest|$IMAGE_TAG|g" deployment.yaml
 
-                kubectl apply -f k8s/
+                kubectl apply -f .
                 '''
             }
         }
