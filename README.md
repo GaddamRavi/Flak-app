@@ -44,6 +44,8 @@ Each pod runs the Flask server on port `5000`.
 | `deployment.yaml` | Kubernetes Deployment running two Flask replicas |
 | `service.yaml` | Kubernetes NodePort Service exposing the Deployment |
 | `.gitignore` | Files Git should not track |
+| `.dockerignore` | Local files excluded from the container image |
+| `test_app.py` | Focused tests for metrics and API behavior |
 
 ## Application Endpoints
 
@@ -62,6 +64,20 @@ curl http://localhost:5000/api/status
 curl http://localhost:5000/healthz
 curl http://localhost:5000/readyz
 ```
+
+### Metric Scope
+
+OpsPulse separates application metrics from container filesystem metrics:
+
+- **App Memory** is the resident memory used by the running Flask process.
+- **Container Memory** is read from Linux cgroups and is included in the API.
+- **App Storage** is the total size of files stored in the application directory.
+- **Container Filesystem** usage and free capacity are included separately in
+  the API and storage status bar.
+
+If Kubernetes does not define a container memory limit, the API reports
+`No limit` rather than comparing application memory against the Kubernetes
+node's total memory.
 
 ## Prerequisites
 
@@ -107,6 +123,12 @@ Start Flask:
 python3 app.py
 ```
 
+Run the tests:
+
+```bash
+python3 -m unittest -v
+```
+
 Open:
 
 ```text
@@ -124,7 +146,7 @@ On Windows PowerShell, activate the virtual environment with:
 Build the image:
 
 ```bash
-docker build -t ravi0619/flask-app:v1 .
+docker build -t ravi0619/flask-app:v3 .
 ```
 
 Run the container:
@@ -134,7 +156,7 @@ docker run --rm -p 5000:5000 \
   -e APP_NAME=OpsPulse \
   -e APP_VERSION=1.0.0 \
   -e ENVIRONMENT=local \
-  ravi0619/flask-app:v1
+  ravi0619/flask-app:v3
 ```
 
 Open `http://localhost:5000`.
@@ -171,13 +193,13 @@ The active context should be `kind-devops-lab`.
 Build the image on the new machine:
 
 ```bash
-docker build -t ravi0619/flask-app:v1 .
+docker build -t ravi0619/flask-app:v3 .
 ```
 
 Load the local image into Kind:
 
 ```bash
-kind load docker-image ravi0619/flask-app:v1 --name devops-lab
+kind load docker-image ravi0619/flask-app:v3 --name devops-lab
 ```
 
 Kind nodes run inside Docker containers. Loading the image makes it available
@@ -236,14 +258,14 @@ docker login
 Build and push a versioned image:
 
 ```bash
-docker build -t ravi0619/flask-app:v2 .
-docker push ravi0619/flask-app:v2
+docker build -t ravi0619/flask-app:v3 .
+docker push ravi0619/flask-app:v3
 ```
 
 Update the image in `deployment.yaml`:
 
 ```yaml
-image: ravi0619/flask-app:v2
+image: ravi0619/flask-app:v3
 ```
 
 Deploy it:
@@ -265,9 +287,9 @@ Reusing the same tag can cause Kubernetes to continue using a cached image.
 For a local Kind deployment:
 
 ```bash
-docker build -t ravi0619/flask-app:v2 .
-kind load docker-image ravi0619/flask-app:v2 --name devops-lab
-kubectl set image deployment/flask-app flask-app=ravi0619/flask-app:v2
+docker build -t ravi0619/flask-app:v4 .
+kind load docker-image ravi0619/flask-app:v4 --name devops-lab
+kubectl set image deployment/flask-app flask-app=ravi0619/flask-app:v4
 kubectl rollout status deployment/flask-app
 ```
 
@@ -297,7 +319,7 @@ Example Kubernetes configuration:
 ```yaml
 containers:
 - name: flask-app
-  image: ravi0619/flask-app:v2
+  image: ravi0619/flask-app:v3
   env:
   - name: APP_VERSION
     value: "2.0.0"
@@ -372,7 +394,7 @@ kubectl config use-context kind-devops-lab
 For a local Kind image:
 
 ```bash
-kind load docker-image ravi0619/flask-app:v1 --name devops-lab
+kind load docker-image ravi0619/flask-app:v3 --name devops-lab
 kubectl rollout restart deployment/flask-app
 ```
 

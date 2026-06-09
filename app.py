@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request
 
@@ -15,6 +16,8 @@ APP_NAME = os.getenv("APP_NAME", "OpsPulse")
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
 STARTED_AT = time.time()
+APP_DIRECTORY = Path(__file__).resolve().parent
+STORAGE_PATH = Path(os.getenv("APP_STORAGE_PATH", APP_DIRECTORY))
 
 request_lock = threading.Lock()
 request_count = 0
@@ -43,32 +46,139 @@ def format_duration(seconds):
     return f"{seconds}s"
 
 
-def memory_metrics():
-    total = available = None
+def read_text_file(path):
     try:
-        with open("/proc/meminfo", encoding="utf-8") as meminfo:
-            values = {}
-            for line in meminfo:
-                key, value = line.split(":", 1)
-                values[key] = int(value.strip().split()[0]) * 1024
-            total = values.get("MemTotal")
-            available = values.get("MemAvailable")
-    except (OSError, ValueError):
-        pass
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
 
-    if not total:
-        return {"used_percent": 0, "used": "Unavailable", "total": "Unavailable"}
 
-    used = total - available
+def process_memory_bytes():
+    status = read_text_file("/proc/self/status")
+    if not status:
+        return None
+
+    for line in status.splitlines():
+        if line.startswith("VmRSS:"):
+            try:
+                return int(line.split()[1]) * 1024
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def cgroup_memory_values():
+    paths = (
+        ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.max"),
+        (
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+        ),
+    )
+
+    for usage_path, limit_path in paths:
+        usage_text = read_text_file(usage_path)
+        limit_text = read_text_file(limit_path)
+        if usage_text is None:
+            continue
+
+        try:
+            usage = int(usage_text)
+            limit = None if limit_text in (None, "max") else int(limit_text)
+        except ValueError:
+            continue
+
+        # Cgroup v1 represents an unlimited value with a very large integer.
+        if limit is not None and limit >= 1 << 60:
+            limit = None
+        return usage, limit
+
+    return None, None
+
+
+def memory_metrics():
+    process_used = process_memory_bytes()
+    container_used, container_limit = cgroup_memory_values()
+    used = process_used if process_used is not None else container_used
+
+    if used is None:
+        return {
+            "used_bytes": None,
+            "used_percent": None,
+            "used": "Unavailable",
+            "total": "No limit",
+            "container_used": "Unavailable",
+            "detail": "Memory metrics unavailable",
+            "scope": "unavailable",
+        }
+
+    used_percent = None
+    if container_limit:
+        used_percent = round((used / container_limit) * 100, 1)
+
+    if process_used is not None:
+        detail = "Flask process resident memory"
+        scope = "process_rss"
+    else:
+        detail = "Container cgroup memory"
+        scope = "container_cgroup"
+
+    if container_limit:
+        detail += f" · {format_bytes(container_limit)} container limit"
+    else:
+        detail += " · no container limit"
+
     return {
-        "used_percent": round((used / total) * 100, 1),
+        "used_bytes": used,
+        "used_percent": used_percent,
         "used": format_bytes(used),
-        "total": format_bytes(total),
+        "total": format_bytes(container_limit) if container_limit else "No limit",
+        "container_used": (
+            format_bytes(container_used) if container_used is not None else "Unavailable"
+        ),
+        "detail": detail,
+        "scope": scope,
+    }
+
+
+def directory_size(path):
+    total = 0
+    pending = [Path(path)]
+
+    while pending:
+        current = pending.pop()
+        try:
+            for entry in os.scandir(current):
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+    return total
+
+
+def disk_metrics():
+    app_used = directory_size(STORAGE_PATH)
+    filesystem = shutil.disk_usage(STORAGE_PATH)
+    return {
+        "app_used_bytes": app_used,
+        "app_used": format_bytes(app_used),
+        "path": str(STORAGE_PATH),
+        "filesystem_used_percent": round((filesystem.used / filesystem.total) * 100, 1),
+        "filesystem_used": format_bytes(filesystem.used),
+        "filesystem_total": format_bytes(filesystem.total),
+        "filesystem_free": format_bytes(filesystem.free),
     }
 
 
 def system_metrics():
-    disk = shutil.disk_usage("/")
     try:
         load_average = round(os.getloadavg()[0], 2)
     except (AttributeError, OSError):
@@ -81,11 +191,7 @@ def system_metrics():
         "load_average": load_average,
         "cpu_count": os.cpu_count() or 1,
         "memory": memory_metrics(),
-        "disk": {
-            "used_percent": round((disk.used / disk.total) * 100, 1),
-            "used": format_bytes(disk.used),
-            "total": format_bytes(disk.total),
-        },
+        "disk": disk_metrics(),
     }
 
 
@@ -268,12 +374,12 @@ PAGE = r"""
         <div><div class="value" id="requests">--</div><div class="sub">Handled by this instance</div></div>
       </article>
       <article class="card metric">
-        <div class="metric-top">Memory <i class="icon">M</i></div>
-        <div><div class="value" id="memory">--</div><div class="sub" id="memorySub">System memory utilization</div></div>
+        <div class="metric-top">App Memory <i class="icon">M</i></div>
+        <div><div class="value" id="memory">--</div><div class="sub" id="memorySub">Flask process resident memory</div></div>
       </article>
       <article class="card metric">
-        <div class="metric-top">Disk <i class="icon">D</i></div>
-        <div><div class="value" id="disk">--</div><div class="sub" id="diskSub">Filesystem utilization</div></div>
+        <div class="metric-top">App Storage <i class="icon">D</i></div>
+        <div><div class="value" id="disk">--</div><div class="sub" id="diskSub">Files stored in the application directory</div></div>
       </article>
 
       <section class="card wide">
@@ -332,14 +438,14 @@ PAGE = r"""
 
         text("uptime", m.uptime);
         text("requests", Number(m.requests).toLocaleString());
-        text("memory", m.memory.used_percent + "%");
-        text("memorySub", m.memory.used + " of " + m.memory.total);
-        text("disk", m.disk.used_percent + "%");
-        text("diskSub", m.disk.used + " of " + m.disk.total);
+        text("memory", m.memory.used);
+        text("memorySub", m.memory.detail);
+        text("disk", m.disk.app_used);
+        text("diskSub", m.disk.filesystem_free + " free on container filesystem");
         text("pythonService", "Python " + data.runtime.python + " · load " + m.load_average);
-        text("storageService", m.disk.used_percent + "% utilized");
+        text("storageService", m.disk.filesystem_used_percent + "% filesystem utilized");
         byId("loadBar").style.width = Math.min(100, (m.load_average / Math.max(m.cpu_count, 1)) * 100) + "%";
-        byId("diskBar").style.width = m.disk.used_percent + "%";
+        byId("diskBar").style.width = m.disk.filesystem_used_percent + "%";
         text("appName", data.application.name);
         text("version", data.application.version);
         text("environment", data.application.environment);

@@ -3,8 +3,8 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = "<your-dockerhub-user>/flask-app"
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_NAME = "ravi0619/flask-app"
+        IMAGE_TAG = "1"
     }
 
     stages {
@@ -17,7 +17,7 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh 'docker build -t $IMAGE_NAME:$IMAGE_TAG .'
+                sh 'docker build -t $flask-app:$v2 .'
             }
         }
 
@@ -27,8 +27,8 @@ pipeline {
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'USER',
-                        passwordVariable: 'PASS'
+                        usernameVariable: 'ravi0619',
+                        passwordVariable: 'Ravi_0619'
                     )
                 ]) {
 
