@@ -33,10 +33,15 @@ pipeline {
                 ]) {
 
                     sh '''
-                    echo $PASS | docker login -u $dockeruser --password-stdin
+            echo "USER=$dockeruser"
 
-                    docker push $IMAGE_NAME:$IMAGE_TAG
-                    '''
+            if [ -z "$dockerpass" ]; then
+                echo "PASSWORD EMPTY"
+                exit 1
+            else
+                echo "PASSWORD FOUND"
+            fi
+            '''
                 }
             }
         }
